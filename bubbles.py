@@ -75,6 +75,12 @@ except ImportError:
             "username": "test1",
             "password": "testpassword1",
         },
+        "sandbox": {
+            "host"    : "http://api-soap-sandbox.flyrlabs.com",
+        },
+        "prod": {
+            "host"    : "http://api-soap.flyrlabs.com",
+        }
     }
     logger.info("Env map from script")
 
