@@ -7,6 +7,7 @@ import hashlib
 import os
 import re
 import time
+import threading
 from xml.etree import ElementTree
 
 import requests
@@ -19,6 +20,7 @@ parser.add_argument("--username", type=str,  default="")
 parser.add_argument("--password", type=str,  default="")
 parser.add_argument("--batch",    action="store_true")
 parser.add_argument("--file",     type=str,  required=True)
+parser.add_argument("--threads",  type=int,  default=1)
 args = parser.parse_args()
 
 re_status = re.compile("responseCode=\"(.*)\"\s", re.DOTALL | re.IGNORECASE)
@@ -121,46 +123,73 @@ envelope = """
 """
 
 
-def timer(func):
-    def wrapper(*args):
-        return func(*args, tic=time.time())
-    return wrapper
+def prepare_and_send(reader, single_file=False):
+    for index, line in reader:
+
+        matches = re_body.findall(line)
+        if len(matches) != 1:
+            print("{:>6d}: Invalid number of <soap-env:body> sections.  Expected 1 found {:d}".format(index, len(matches)))
+            continue
+
+        data = "".join(envelope.format(**{
+            "security": security.apply().decode("ascii"),
+            "body"    : matches[0],
+        }).split("\n"))
+
+        tic      = time.time()
+        response = requests.post(url, data=data, headers=headers)
+        toc      = time.time()
+
+        status   = re_status.findall(response.content.decode("ascii"))
+        message  = re_errors.findall(response.content.decode("ascii"))
+        print("{:>6d}: got {} in {:>4.2f}s. Message: {}".format(index, status, (toc - tic), message))
+
+        if single_file:
+            return
 
 
-@timer
-def prepare_and_send(index, line, tic=0):
-    matches = re_body.findall(line)
-    if len(matches) != 1:
-        print("Invalid number of <soap-env:body> sections.  Expected 1 found {:d}".format(len(matches)))
-        return 0, 0
+class Reader(object):
 
-    data = "".join(envelope.format(**{
-        "security": security.apply().decode("ascii"),
-        "body"    : matches[0],
-    }).split("\n"))
+    def __init__(self, filename):
+        self.file = open(filename, "r")
+        self.lock = threading.Lock()
+        self.row  = 0
+        self.open = True
 
-    response = requests.post(url, data=data, headers=headers)
-    toc      = time.time()
-    status   = re_status.findall(response.content.decode("ascii"))
-    message  = re_errors.findall(response.content.decode("ascii"))
-    print("{:>4d}: got {} in {:>4.2f}s. Message: {}".format(index, status, (toc - tic), message))
-    return 1, toc - tic
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.lock.acquire()
+
+        if not self.open:
+            self.lock.release()
+            raise StopIteration
+
+        line = self.file.readline()
+        self.row += 1
+        self.lock.release()
+        return self.row, line
+
+    def close(self):
+        self.lock.acquire()
+        self.open = False
+        self.file.close()
+        self.lock.release()
 
 
-with open(args.file, "r") as f:
+reader  = Reader(args.file)
+if args.batch:
+    threads = []
+    for _ in range(args.threads):
+        w = threading.Thread(target=prepare_and_send, args=(reader,))
+        w.start()
+        threads.append(w)
+
     try:
-        if args.batch:
-            success, timing = 0, 0
-            for index, line in enumerate(f, start=1):
-                s, t = prepare_and_send(index, line)
-                success += s
-                timing  += t
-        else:
-            success, timing = prepare_and_send(1, f.read())
-
+        for w in threads:
+            w.join()
     except KeyboardInterrupt:
-        pass
-    finally:
-        print("======================================================")
-        print("{} successes in {:4.2f}s with an average of {:4.2f}s response time".format(success, timing, timing / success))
-
+        reader.close()
+else:
+    prepare_and_send(reader, single_file=True)
