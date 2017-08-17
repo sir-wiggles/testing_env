@@ -80,7 +80,7 @@ class UsernameToken(object):
         elements.extend(self._create_password_digest())
 
         token.extend(elements)
-        return ElementTree.tostring(security)
+        return ElementTree.tostring(security).decode("ascii")
 
     def _create_password_digest(self):
         nonce = os.urandom(16)
@@ -132,7 +132,7 @@ def prepare_and_send(reader, single_file=False):
             continue
 
         data = "".join(envelope.format(**{
-            "security": security.apply().decode("ascii"),
+            "security": security.apply(),
             "body"    : matches[0],
         }).split("\n"))
 
@@ -140,12 +140,26 @@ def prepare_and_send(reader, single_file=False):
         response = requests.post(url, data=data, headers=headers)
         toc      = time.time()
 
-        status   = re_status.findall(response.content.decode("ascii"))
-        message  = re_errors.findall(response.content.decode("ascii"))
+        status  = re_status.findall(response.content.decode("ascii"))
+        message = re_errors.findall(response.content.decode("ascii"))
         print("{:>6d}: got {} in {:>4.2f}s. Message: {}".format(index, status, (toc - tic), message))
 
         if single_file:
             return
+
+
+def mutex(func):
+    def wrapper(self, *args, **kwargs):
+        self.lock.acquire()
+        try:
+            data = func(self, *args, **kwargs)
+        except StopIteration as e:
+            raise StopIteration
+        else:
+            return data
+        finally:
+            self.lock.release()
+    return wrapper
 
 
 class Reader(object):
@@ -159,27 +173,21 @@ class Reader(object):
     def __iter__(self):
         return self
 
+    @mutex
     def __next__(self):
-        self.lock.acquire()
-
-        if not self.open:
-            self.lock.release()
+        if self.file.closed:
             raise StopIteration
 
         line = self.file.readline()
         if line == "":
-            self.lock.release()
             raise StopIteration
 
         self.row += 1
-        self.lock.release()
         return self.row, line
 
+    @mutex
     def close(self):
-        self.lock.acquire()
-        self.open = False
         self.file.close()
-        self.lock.release()
 
 
 reader  = Reader(args.file)
