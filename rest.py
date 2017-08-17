@@ -21,12 +21,12 @@ STATUS_SUCCESS = "SUCCESS"
 STATUS_PARTIAL = "PARTIAL"
 STATUS_ERROR   = "ERROR"
 STATUS_EMPTY   = ""
+STAGER         = 0.25
 
 STATUS_LOGGING_LEVELS = {
     STATUS_SUCCESS : logging.INFO,
     STATUS_PARTIAL : logging.WARN,
     STATUS_ERROR   : logging.ERROR,
-    STATUS_EMPTY   : logging.ERROR,
 }
 
 # Logging config
@@ -239,7 +239,7 @@ def worker(reader, single_file=False):
         toc      = time.time()
 
         content = response.content.decode("ascii")
-        status = re_status.findall(content)
+        status  = re_status.findall(content)
         if len(status):
             status = status.pop()
         else:
@@ -267,11 +267,11 @@ def worker(reader, single_file=False):
 reader  = Reader(args.file)
 if args.batch:
     threads = []
-    logger.info("Starting {:d} worker{:s}".format(args.threads, "" if args.threads == 1 else "s"))
+    logger.info("starting {:d} worker{:s}".format(args.threads, "" if args.threads == 1 else "s"))
     for _ in range(args.threads):
         w = threading.Thread(target=worker, args=(reader,))
         w.start()
-        time.sleep(.25)
+        time.sleep(STAGER)
         threads.append(w)
 
     try:
@@ -284,6 +284,6 @@ else:
     reader.close()
 
 while threading.active_count() > 1:
-    time.sleep(.5)
+    time.sleep(.1)
 
 reader.print_stats()
