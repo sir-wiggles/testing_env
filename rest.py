@@ -47,6 +47,7 @@ parser.add_argument("--file",     type=str,  required=True)    # file where payl
 parser.add_argument("--threads",  type=int,  default=1)        # number of threads to use
 args = parser.parse_args()
 
+re_pnr      = re.compile('recordLocatorNumber="(\w+)"', re.DOTALL | re.IGNORECASE)
 re_security = re.compile("<soap:Text xml:lang=\".+\">(.*)</soap:Text>", re.DOTALL | re.IGNORECASE)
 re_status   = re.compile("responseCode=\"(.*)\"\s", re.DOTALL | re.IGNORECASE)
 re_errors   = re.compile("ErrorMessage message=\"(.*)\"/>", re.DOTALL | re.IGNORECASE)
@@ -223,6 +224,10 @@ def worker(reader, single_file=False):
             reader.score(0, "BODY COUNT")
             continue
 
+        pnr = re_pnr.findall(line)
+        if len(pnr):
+            pnr = pnr.pop()
+
         data = "".join(envelope.format(**{
             "security": security.apply(),
             "body"    : matches[0],
@@ -242,15 +247,15 @@ def worker(reader, single_file=False):
 
         dt = toc - tic
         if level == logging.INFO:
-            logger.log(level, "{:>6d}: {} in {:>5.2f}s".format(index, status, dt))
+            logger.log(level, "{:>6d}: {} {} in {:>5.2f}s".format(index, pnr, status, dt))
 
         elif level == logging.WARN:
             message = re_errors.findall(content)
-            logger.log(level, "{:>6d}: {} in {:>5.2f}s with message: {}".format(index, status, dt, message))
+            logger.log(level, "{:>6d}: {} {} in {:>5.2f}s with message: {}".format(index, pnr, status, dt, message))
 
         else:
             message = re_security.findall(content)
-            logger.log(level, "{:>6d}: {} in {:>5.2f}s with message: {}".format(index, status, dt, message))
+            logger.log(level, "{:>6d}: {} {} in {:>5.2f}s with message: {}".format(index, pnr, status, dt, message))
 
         reader.score(dt, status)
 
