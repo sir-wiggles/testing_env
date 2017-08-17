@@ -20,9 +20,6 @@ STATUS_SUCCESS = "SUCCESS"
 STATUS_PARTIAL = "PARTIAL"
 STATUS_ERROR   = "ERROR"
 STATUS_EMPTY   = ""
-VAR_USERNAME   = "username"
-VAR_PASSWORD   = "password"
-VAR_HOST       = "host"
 
 STATUS_LOGGING_LEVELS = {
     STATUS_SUCCESS : logging.INFO,
@@ -41,42 +38,47 @@ logger.addHandler(handler)
 
 # Arguments
 parser = argparse.ArgumentParser()
-parser.add_argument("--env",      type=str,  default="local")
-parser.add_argument("--username", type=str,  default="")
-parser.add_argument("--password", type=str,  default="")
-parser.add_argument("--batch",    action="store_true")
-parser.add_argument("--file",     type=str,  required=True)
-parser.add_argument("--threads",  type=int,  default=1)
+parser.add_argument("--env",      type=str,  default="local")  # key in the env map
+parser.add_argument("--username", type=str,  default="")       # used to overwrite env value
+parser.add_argument("--password", type=str,  default="")       # used to overwrite env value
+parser.add_argument("--batch",    action="store_true")         # to execute multiple lines from the file
+parser.add_argument("--file",     type=str,  required=True)    # file where payloads are located
+parser.add_argument("--threads",  type=int,  default=1)        # number of threads to use
 args = parser.parse_args()
 
-re_status = re.compile("responseCode=\"(.*)\"\s", re.DOTALL | re.IGNORECASE)
-re_errors = re.compile("ErrorMessage message=\"(.*)\"/>", re.DOTALL | re.IGNORECASE)
-re_body   = re.compile("<soap-env:body>(.*)</soap-env:body>", re.DOTALL | re.IGNORECASE)
-endpoint  = "trs/TravelReservationSyncEndpointBinding?wsdl"
-env       = {
-    "local": {
-        VAR_HOST    : "http://localhost:5052",
-        VAR_USERNAME: "test1",
-        VAR_PASSWORD: "testpassword1",
-    },
-    "dev"  : {
-        VAR_HOST    : "http://api-soap-dev.flyrlabs.com",
-        VAR_USERNAME: "test1",
-        VAR_PASSWORD: "testpassword1",
-    },
-    "stage": {
-        VAR_HOST    : "http://api-soap-staging.flyrlabs.com",
-        VAR_USERNAME: "test1",
-        VAR_PASSWORD: "testpassword1",
-    },
-    "prod" : {
-        VAR_HOST    : "http://api-soap.flyrlabs.com",
-    }
-}.get(args.env, None)
+re_security = re.compile("<soap:Text xml:lang=\".+\">(.*)</soap:Text>", re.DOTALL | re.IGNORECASE)
+re_status   = re.compile("responseCode=\"(.*)\"\s", re.DOTALL | re.IGNORECASE)
+re_errors   = re.compile("ErrorMessage message=\"(.*)\"/>", re.DOTALL | re.IGNORECASE)
+re_body     = re.compile("<soap-env:body>(.*)</soap-env:body>", re.DOTALL | re.IGNORECASE)
+endpoint    = "trs/TravelReservationSyncEndpointBinding?wsdl"
 
-host     = env.get(VAR_HOST, "")
-username = env.get(VAR_USERNAME, "") if not args.username else args.username
-password = env.get(VAR_PASSWORD, "") if not args.password else args.password
+try:
+    from config import env
+    logger.info("Env map from config")
+except ImportError:
+    env = {
+        "local": {
+            "host"    : "http://localhost:5052",  # change port
+            "username": "test1",
+            "password": "testpassword1",
+        },
+        "dev": {
+            "host"    : "http://api-soap-dev.flyrlabs.com",
+            "username": "test1",
+            "password": "testpassword1",
+        },
+        "stage": {
+            "host"    : "http://api-soap-staging.flyrlabs.com",
+            "username": "test1",
+            "password": "testpassword1",
+        },
+    }
+    logger.info("Env map from script")
+
+env      = env.get(args.env, None)
+host     = env.get("host", "")
+username = env.get("username", "") if not args.username else args.username
+password = env.get("password", "") if not args.password else args.password
 
 logger.info("Arguments used    : {}".format(args))
 logger.info("Env               : {}".format(env))
@@ -218,7 +220,16 @@ def worker(reader, single_file=False):
             s = status[0]
         level = STATUS_LOGGING_LEVELS.get(s, logging.ERROR)
 
-        logger.log(level, "{:>6d}: got {} in {:>5.2f}s. Message: {}".format(index, status, (toc - tic), message))
+        if len(status):
+            status = status.pop()
+
+        if level == logging.INFO:
+            logger.log(level, "{:>6d}: {} in {:>5.2f}s".format(index, status, (toc - tic)))
+        elif level == logging.WARN:
+            logger.log(level, "{:>6d}: {} in {:>5.2f}s with message: {}".format(index, status, (toc - tic), message))
+        else:
+            error = re_security.findall(response.content.decode("ascii"))
+            logger.log(level, "{:>6d}: {} in {:>5.2f}s with resp: {}".format(index, "UNKNOWN", (toc - tic), error))
 
         if single_file:
             return
@@ -227,6 +238,7 @@ def worker(reader, single_file=False):
 reader  = Reader(args.file)
 if args.batch:
     threads = []
+    logger.info("Starting {:d} worker{:s}".format(args.threads, "" if args.threads == 1 else "s"))
     for _ in range(args.threads):
         w = threading.Thread(target=worker, args=(reader,))
         w.start()
