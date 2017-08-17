@@ -10,6 +10,7 @@ import re
 import sys
 import threading
 import time
+from collections import defaultdict
 from xml.etree import ElementTree
 
 import requests
@@ -33,7 +34,7 @@ logger    = logging.getLogger(__name__)
 handler   = logging.StreamHandler(sys.stdout)
 formatter = logging.Formatter('%(asctime)s | %(levelname)7s | %(message)s')
 handler.setFormatter(formatter)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 logger.addHandler(handler)
 
 # Arguments
@@ -171,9 +172,10 @@ def mutex(func):
 class Reader(object):
 
     def __init__(self, filename):
-        self.file = open(filename, "r")
-        self.lock = threading.Lock()
-        self.row  = 0
+        self.file  = open(filename, "r")
+        self.lock  = threading.Lock()
+        self.row   = 0
+        self.stats = defaultdict(lambda: defaultdict(float))
 
     def __iter__(self):
         return self
@@ -194,13 +196,31 @@ class Reader(object):
     def close(self):
         self.file.close()
 
+    @mutex
+    def score(self, dt, status):
+        self.stats[status]["timing"] += dt
+        self.stats[status]["count"]  += 1
+
+    def print_stats(self):
+        fmt = "{status:>10}: {count:>6.0f} requests in {timing:>8.2f}s"
+        logger.info("{} stat summary {}".format(*("=" * 20, "=" * 20)))
+
+        total_requests, total_time = 0, 0
+        for status, info in self.stats.items():
+            total_requests += info.get("count")
+            total_time     += info.get("timing")
+            logger.debug(fmt.format(status=status, **info))
+
+        logger.debug(fmt.format(status="total", count=total_requests, timing=total_time))
+
 
 def worker(reader, single_file=False):
     for index, line in reader:
 
         matches = re_body.findall(line)
         if len(matches) != 1:
-            logger.log(logging.ERROR, "{:>6d}: Invalid number of <soap-env:body> sections.  Expected 1 found {:d}".format(index, len(matches)))
+            logger.error("{:>6d}: invalid number of <soap-env:body> sections. expected 1 found {:d}".format(index, len(matches)))
+            reader.score(0, "BODY COUNT")
             continue
 
         data = "".join(envelope.format(**{
@@ -212,24 +232,27 @@ def worker(reader, single_file=False):
         response = requests.post(url, data=data, headers=headers)
         toc      = time.time()
 
-        status   = re_status.findall(response.content.decode("ascii"))
-        message  = re_errors.findall(response.content.decode("ascii"))
-
-        s = ""
-        if len(status):
-            s = status[0]
-        level = STATUS_LOGGING_LEVELS.get(s, logging.ERROR)
-
+        content = response.content.decode("ascii")
+        status = re_status.findall(content)
         if len(status):
             status = status.pop()
-
-        if level == logging.INFO:
-            logger.log(level, "{:>6d}: {} in {:>5.2f}s".format(index, status, (toc - tic)))
-        elif level == logging.WARN:
-            logger.log(level, "{:>6d}: {} in {:>5.2f}s with message: {}".format(index, status, (toc - tic), message))
         else:
-            error = re_security.findall(response.content.decode("ascii"))
-            logger.log(level, "{:>6d}: {} in {:>5.2f}s with resp: {}".format(index, "UNKNOWN", (toc - tic), error))
+            status = "UNKNOWN"
+        level = STATUS_LOGGING_LEVELS.get(status, logging.ERROR)
+
+        dt = toc - tic
+        if level == logging.INFO:
+            logger.log(level, "{:>6d}: {} in {:>5.2f}s".format(index, status, dt))
+
+        elif level == logging.WARN:
+            message = re_errors.findall(content)
+            logger.log(level, "{:>6d}: {} in {:>5.2f}s with message: {}".format(index, status, dt, message))
+
+        else:
+            message = re_security.findall(content)
+            logger.log(level, "{:>6d}: {} in {:>5.2f}s with message: {}".format(index, status, dt, message))
+
+        reader.score(dt, status)
 
         if single_file:
             return
@@ -253,3 +276,8 @@ if args.batch:
 else:
     worker(reader, single_file=True)
     reader.close()
+
+while threading.active_count() > 1:
+    time.sleep(.5)
+
+reader.print_stats()
