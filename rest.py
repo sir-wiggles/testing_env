@@ -13,8 +13,8 @@ from zeep.wsse import utils
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--env",      type=str,  default="local")
-parser.add_argument("--username", type=str,  default="test1")
-parser.add_argument("--password", type=str,  default="testpassword1")
+parser.add_argument("--username", type=str,  default="")
+parser.add_argument("--password", type=str,  default="")
 parser.add_argument("--batch",    action="store_true")
 parser.add_argument("--file",     type=str,  required=True)
 args = parser.parse_args()
@@ -22,17 +22,33 @@ args = parser.parse_args()
 re_status = re.compile("responseCode=\"(.*)\"\s", re.DOTALL | re.IGNORECASE)
 re_errors = re.compile("ErrorMessage message=\"(.*)\"/>", re.DOTALL | re.IGNORECASE)
 re_body   = re.compile("<soap-env:body>(.*)</soap-env:body>", re.DOTALL | re.IGNORECASE)
-username  = args.username
-password  = args.password
 endpoint  = "trs/TravelReservationSyncEndpointBinding?wsdl"
-host      = {
-    "local": "http://localhost:8888",
-    "dev"  : "http://api-soap-dev.flyrlabs.com",
-    "stage": "http://api-soap-stage.flyrlabs.com",
+env       = {
+    "local": {
+        "host"    : "http://localhost:8888",
+        "username": "test1",
+        "password": "testpassword1",
+    },
+    "dev"  : {
+        "host": "http://api-soap-dev.flyrlabs.com",
+        "username": "test1",
+        "password": "testpassword1",
+    },
+    "stage": {
+        "host": "http://api-soap-staging.flyrlabs.com",
+        "username": "test1",
+        "password": "testpassword1",
+    }
 }.get(args.env, None)
 
-print("Arguments used: {}".format(args))
-print("Endpoint      : {}/{}".format(host, endpoint))
+host     = env.get("host", "")
+username = env.get("username") if not args.username else args.username
+password = env.get("password") if not args.password else args.password
+
+print("Arguments used    : {}".format(args))
+print("Env               : {}".format(env))
+print("Endpoint          : {}/{}".format(host, endpoint))
+print("Username/password : {} {}".format(username, password))
 print("======================================================")
 
 
@@ -130,14 +146,19 @@ def prepare_and_send(index, line, tic=0):
 
 
 with open(args.file, "r") as f:
-    if args.batch:
-        success, timing = 0, 0
-        for index, line in enumerate(f, start=1):
-            s, t = prepare_and_send(index, line)
-            success += s
-            timing  += t
-    else:
-        success, timing = prepare_and_send(1, f.read())
+    try:
+        if args.batch:
+            success, timing = 0, 0
+            for index, line in enumerate(f, start=1):
+                s, t = prepare_and_send(index, line)
+                success += s
+                timing  += t
+        else:
+            success, timing = prepare_and_send(1, f.read())
 
-    print("======================================================")
-    print("{} successes in {:4.2f}s with an average of {:4.2f}s response time".format(success, timing, timing / success))
+    except KeyboardInterrupt:
+        pass
+    finally:
+        print("======================================================")
+        print("{} successes in {:4.2f}s with an average of {:4.2f}s response time".format(success, timing, timing / success))
+
