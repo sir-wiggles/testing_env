@@ -4,15 +4,23 @@ import argparse
 import base64
 import datetime
 import hashlib
+import logging
 import os
 import re
-import time
+import sys
 import threading
+import time
 from xml.etree import ElementTree
 
 import requests
 from zeep.wsse import utils
 
+logger    = logging.getLogger(__name__)
+handler   = logging.StreamHandler(sys.stdout)
+formatter = logging.Formatter('%(asctime)s | %(levelname)7s | %(message)s')
+handler.setFormatter(formatter)
+logger.setLevel(logging.INFO)
+logger.addHandler(handler)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--env",      type=str,  default="local")
@@ -49,11 +57,11 @@ host     = env.get("host", "")
 username = env.get("username") if not args.username else args.username
 password = env.get("password") if not args.password else args.password
 
-print("Arguments used    : {}".format(args))
-print("Env               : {}".format(env))
-print("Endpoint          : {}/{}".format(host, endpoint))
-print("Username/password : {} {}".format(username, password))
-print("======================================================")
+logger.info("Arguments used    : {}".format(args))
+logger.info("Env               : {}".format(env))
+logger.info("Endpoint          : {}/{}".format(host, endpoint))
+logger.info("Username/password : {} {}".format(username, password))
+logger.info("======================================================")
 
 
 class UsernameToken(object):
@@ -128,7 +136,7 @@ def prepare_and_send(reader, single_file=False):
 
         matches = re_body.findall(line)
         if len(matches) != 1:
-            print("{:>6d}: Invalid number of <soap-env:body> sections.  Expected 1 found {:d}".format(index, len(matches)))
+            logger.log(logging.ERROR, "{:>6d}: Invalid number of <soap-env:body> sections.  Expected 1 found {:d}".format(index, len(matches)))
             continue
 
         data = "".join(envelope.format(**{
@@ -142,7 +150,16 @@ def prepare_and_send(reader, single_file=False):
 
         status  = re_status.findall(response.content.decode("ascii"))
         message = re_errors.findall(response.content.decode("ascii"))
-        print("{:>6d}: got {} in {:>4.2f}s. Message: {}".format(index, status, (toc - tic), message))
+
+        if len(status):
+            if "SUCCESS" in status:
+                level = logging.INFO
+            elif "PARTIAL" in status:
+                level = logging.WARN
+            else:
+                level = logging.ERROR
+
+        logger.log(level, "{:>6d}: got {} in {:>4.2f}s. Message: {}".format(index, status, (toc - tic), message))
 
         if single_file:
             return
@@ -154,7 +171,7 @@ def mutex(func):
         try:
             data = func(self, *args, **kwargs)
         except StopIteration as e:
-            raise StopIteration
+            raise e
         else:
             return data
         finally:
@@ -168,7 +185,6 @@ class Reader(object):
         self.file = open(filename, "r")
         self.lock = threading.Lock()
         self.row  = 0
-        self.open = True
 
     def __iter__(self):
         return self
@@ -196,6 +212,7 @@ if args.batch:
     for _ in range(args.threads):
         w = threading.Thread(target=prepare_and_send, args=(reader,))
         w.start()
+        time.sleep(.25)
         threads.append(w)
 
     try:
