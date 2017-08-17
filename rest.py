@@ -15,6 +15,23 @@ from xml.etree import ElementTree
 import requests
 from zeep.wsse import utils
 
+# Constants
+STATUS_SUCCESS = "SUCCESS"
+STATUS_PARTIAL = "PARTIAL"
+STATUS_ERROR   = "ERROR"
+STATUS_EMPTY   = ""
+VAR_USERNAME   = "username"
+VAR_PASSWORD   = "password"
+VAR_HOST       = "host"
+
+STATUS_LOGGING_LEVELS = {
+    STATUS_SUCCESS : logging.INFO,
+    STATUS_PARTIAL : logging.WARN,
+    STATUS_ERROR   : logging.ERROR,
+    STATUS_EMPTY   : logging.ERROR,
+}
+
+# Logging config
 logger    = logging.getLogger(__name__)
 handler   = logging.StreamHandler(sys.stdout)
 formatter = logging.Formatter('%(asctime)s | %(levelname)7s | %(message)s')
@@ -22,6 +39,7 @@ handler.setFormatter(formatter)
 logger.setLevel(logging.INFO)
 logger.addHandler(handler)
 
+# Arguments
 parser = argparse.ArgumentParser()
 parser.add_argument("--env",      type=str,  default="local")
 parser.add_argument("--username", type=str,  default="")
@@ -37,25 +55,28 @@ re_body   = re.compile("<soap-env:body>(.*)</soap-env:body>", re.DOTALL | re.IGN
 endpoint  = "trs/TravelReservationSyncEndpointBinding?wsdl"
 env       = {
     "local": {
-        "host"    : "http://localhost:8888",
-        "username": "test1",
-        "password": "testpassword1",
+        VAR_HOST    : "http://localhost:5052",
+        VAR_USERNAME: "test1",
+        VAR_PASSWORD: "testpassword1",
     },
     "dev"  : {
-        "host": "http://api-soap-dev.flyrlabs.com",
-        "username": "test1",
-        "password": "testpassword1",
+        VAR_HOST    : "http://api-soap-dev.flyrlabs.com",
+        VAR_USERNAME: "test1",
+        VAR_PASSWORD: "testpassword1",
     },
     "stage": {
-        "host": "http://api-soap-staging.flyrlabs.com",
-        "username": "test1",
-        "password": "testpassword1",
+        VAR_HOST    : "http://api-soap-staging.flyrlabs.com",
+        VAR_USERNAME: "test1",
+        VAR_PASSWORD: "testpassword1",
+    },
+    "prod" : {
+        VAR_HOST    : "http://api-soap.flyrlabs.com",
     }
 }.get(args.env, None)
 
-host     = env.get("host", "")
-username = env.get("username") if not args.username else args.username
-password = env.get("password") if not args.password else args.password
+host     = env.get(VAR_HOST, "")
+username = env.get(VAR_USERNAME, "") if not args.username else args.username
+password = env.get(VAR_PASSWORD, "") if not args.password else args.password
 
 logger.info("Arguments used    : {}".format(args))
 logger.info("Env               : {}".format(env))
@@ -131,40 +152,6 @@ envelope = """
 """
 
 
-def prepare_and_send(reader, single_file=False):
-    for index, line in reader:
-
-        matches = re_body.findall(line)
-        if len(matches) != 1:
-            logger.log(logging.ERROR, "{:>6d}: Invalid number of <soap-env:body> sections.  Expected 1 found {:d}".format(index, len(matches)))
-            continue
-
-        data = "".join(envelope.format(**{
-            "security": security.apply(),
-            "body"    : matches[0],
-        }).split("\n"))
-
-        tic      = time.time()
-        response = requests.post(url, data=data, headers=headers)
-        toc      = time.time()
-
-        status  = re_status.findall(response.content.decode("ascii"))
-        message = re_errors.findall(response.content.decode("ascii"))
-
-        if len(status):
-            if "SUCCESS" in status:
-                level = logging.INFO
-            elif "PARTIAL" in status:
-                level = logging.WARN
-            else:
-                level = logging.ERROR
-
-        logger.log(level, "{:>6d}: got {} in {:>4.2f}s. Message: {}".format(index, status, (toc - tic), message))
-
-        if single_file:
-            return
-
-
 def mutex(func):
     def wrapper(self, *args, **kwargs):
         self.lock.acquire()
@@ -206,11 +193,42 @@ class Reader(object):
         self.file.close()
 
 
+def worker(reader, single_file=False):
+    for index, line in reader:
+
+        matches = re_body.findall(line)
+        if len(matches) != 1:
+            logger.log(logging.ERROR, "{:>6d}: Invalid number of <soap-env:body> sections.  Expected 1 found {:d}".format(index, len(matches)))
+            continue
+
+        data = "".join(envelope.format(**{
+            "security": security.apply(),
+            "body"    : matches[0],
+        }).split("\n"))
+
+        tic      = time.time()
+        response = requests.post(url, data=data, headers=headers)
+        toc      = time.time()
+
+        status   = re_status.findall(response.content.decode("ascii"))
+        message  = re_errors.findall(response.content.decode("ascii"))
+
+        s = ""
+        if len(status):
+            s = status[0]
+        level = STATUS_LOGGING_LEVELS.get(s, logging.ERROR)
+
+        logger.log(level, "{:>6d}: got {} in {:>5.2f}s. Message: {}".format(index, status, (toc - tic), message))
+
+        if single_file:
+            return
+
+
 reader  = Reader(args.file)
 if args.batch:
     threads = []
     for _ in range(args.threads):
-        w = threading.Thread(target=prepare_and_send, args=(reader,))
+        w = threading.Thread(target=worker, args=(reader,))
         w.start()
         time.sleep(.25)
         threads.append(w)
@@ -221,4 +239,5 @@ if args.batch:
     except KeyboardInterrupt:
         reader.close()
 else:
-    prepare_and_send(reader, single_file=True)
+    worker(reader, single_file=True)
+    reader.close()
