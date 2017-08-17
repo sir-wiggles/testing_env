@@ -47,11 +47,12 @@ parser.add_argument("--file",     type=str,  required=True)    # file where payl
 parser.add_argument("--threads",  type=int,  default=1)        # number of threads to use
 args = parser.parse_args()
 
-re_pnr      = re.compile('recordLocatorNumber="(\w+)"', re.DOTALL | re.IGNORECASE)
-re_security = re.compile("<soap:Text xml:lang=\".+\">(.*)</soap:Text>", re.DOTALL | re.IGNORECASE)
-re_status   = re.compile("responseCode=\"(.*)\"\s", re.DOTALL | re.IGNORECASE)
-re_errors   = re.compile("ErrorMessage message=\"(.*)\"/>", re.DOTALL | re.IGNORECASE)
-re_body     = re.compile("<soap-env:body>(.*)</soap-env:body>", re.DOTALL | re.IGNORECASE)
+re_status   = re.compile('responseCode="(\w+)"',                      re.DOTALL | re.IGNORECASE)
+re_pnr      = re.compile('recordLocatorNumber="(\w+)"',               re.DOTALL | re.IGNORECASE)
+re_errors   = re.compile('ErrorMessage message="(.*)"/>',             re.DOTALL | re.IGNORECASE)
+re_body     = re.compile('<soap-env:body>(.*)</soap-env:body>',       re.DOTALL | re.IGNORECASE)
+re_security = re.compile('<soap:Text xml:lang=".+">(.*)</soap:Text>', re.DOTALL | re.IGNORECASE)
+
 endpoint    = "trs/TravelReservationSyncEndpointBinding?wsdl"
 
 try:
@@ -60,7 +61,7 @@ try:
 except ImportError:
     env = {
         "local": {
-            "host"    : "http://localhost:5052",  # change port
+            "host"    : "http://localhost:5052",  # change port to match local env
             "username": "test1",
             "password": "testpassword1",
         },
