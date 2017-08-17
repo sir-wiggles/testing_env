@@ -167,6 +167,10 @@ class Reader(object):
             raise StopIteration
 
         line = self.file.readline()
+        if line == "":
+            self.lock.release()
+            raise StopIteration
+
         self.row += 1
         self.lock.release()
         return self.row, line
