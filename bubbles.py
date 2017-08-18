@@ -39,12 +39,12 @@ logger.addHandler(handler)
 
 # Arguments
 parser = argparse.ArgumentParser()
-parser.add_argument("--env",      type=str,  default="local")  # key in the env map
-parser.add_argument("--username", type=str,  default="")       # used to overwrite env value
-parser.add_argument("--password", type=str,  default="")       # used to overwrite env value
-parser.add_argument("--batch",    action="store_true")         # to execute multiple lines from the file
-parser.add_argument("--file",     type=str,  required=True)    # file where payloads are located
-parser.add_argument("--threads",  type=int,  default=1)        # number of threads to use
+parser.add_argument("--env",      type=str,  default="local", help="key in the env map [local, dev, stage, sandbox, prod]")
+parser.add_argument("--username", type=str,  default="",      help="used to overwrite env value")
+parser.add_argument("--password", type=str,  default="",      help="used to overwrite env value")
+parser.add_argument("--batch",    action="store_true",        help="to execute multiple lines from the file")
+parser.add_argument("--file",     type=str,  required=True,   help="relative location of the file where payloads are located")
+parser.add_argument("--threads",  type=int,  default=1,       help="number of threads to use")
 args = parser.parse_args()
 
 re_status   = re.compile('responseCode="(\w+)"',                      re.DOTALL | re.IGNORECASE)
