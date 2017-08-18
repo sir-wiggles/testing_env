@@ -7,6 +7,7 @@ import hashlib
 import logging
 import os
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -14,7 +15,9 @@ from collections import defaultdict
 from xml.etree import ElementTree
 
 import requests
+from gcloud import storage
 from zeep.wsse import utils
+
 
 # Constants
 STATUS_SUCCESS = "SUCCESS"
@@ -39,14 +42,16 @@ logger.addHandler(handler)
 
 # Arguments
 parser = argparse.ArgumentParser()
-parser.add_argument("--env",      type=str,  default="local", help="key in the env map [local, dev, stage, sandbox, prod]")
-parser.add_argument("--username", type=str,  default="",      help="used to overwrite env value")
-parser.add_argument("--password", type=str,  default="",      help="used to overwrite env value")
-parser.add_argument("--batch",    action="store_true",        help="to execute multiple lines from the file")
-parser.add_argument("--file",     type=str,  required=True,   help="relative location of the file where payloads are located")
-parser.add_argument("--threads",  type=int,  default=1,       help="number of threads to use")
+parser.add_argument("--env",      type=str,  default="local",       help="key in the env map [local, dev, stage, sandbox, prod]")
+parser.add_argument("--username", type=str,  default="",            help="used to overwrite env value")
+parser.add_argument("--password", type=str,  default="",            help="used to overwrite env value")
+parser.add_argument("--batch",    action="store_true",              help="to execute multiple lines from the file")
+parser.add_argument("--file",     type=str,  required=True,         help="relative location of the file where payloads are located")
+parser.add_argument("--threads",  type=int,  default=1,             help="number of threads to use")
+parser.add_argument("--skip",     type=str,  nargs="+", default=[], help="transaction types to skip")
 args = parser.parse_args()
 
+re_type     = re.compile('transactionType="(\w+)"',                   re.DOTALL | re.IGNORECASE)
 re_status   = re.compile('responseCode="(\w+)"',                      re.DOTALL | re.IGNORECASE)
 re_pnr      = re.compile('recordLocatorNumber="(\w+)"',               re.DOTALL | re.IGNORECASE)
 re_errors   = re.compile('ErrorMessage message="(.*)"/>',             re.DOTALL | re.IGNORECASE)
@@ -88,6 +93,7 @@ env      = env.get(args.env, None)
 host     = env.get("host", "")
 username = env.get("username", "") if not args.username else args.username
 password = env.get("password", "") if not args.password else args.password
+to_skip  = set(map(lambda x: x.upper(), args.skip))
 
 logger.info("Arguments used    : {}".format(args))
 logger.info("Env               : {}".format(env))
@@ -177,6 +183,35 @@ def mutex(func):
     return wrapper
 
 
+class Cloud(object):
+
+    def __init__(self, prefix, project="flyr-datascience", bucket="flyr_cwt1"):
+        self.bucket = bucket
+        self.prefix = prefix
+        self.bucket = storage.Client(project).get_bucket(bucket)
+        self.passwd = 'flYr_*%1'
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        blobs = self.bucket.list_blobs(prefix=self.prefix)
+        for i, blob in enumerate(blobs):
+            if len(blob.name) < 30:
+                continue
+
+            if i <= 20:
+                continue
+
+            _, name = os.path.split(blob.name)
+            path = os.path.join("/tmp", name)
+
+            blob.download_to_filename(os.path.join("/tmp", name))
+            resp = subprocess.call(["7z", "x", path, "-o/tmp", "-p{}".format(self.passwd), "-y"])
+            print(resp)
+            raise StopIteration
+
+
 class Reader(object):
 
     def __init__(self, filename):
@@ -184,9 +219,18 @@ class Reader(object):
         self.lock  = threading.Lock()
         self.row   = 0
         self.stats = defaultdict(lambda: defaultdict(float))
+        self.pnrs  = set()
 
     def __iter__(self):
         return self
+
+    @mutex
+    def memory(self, pnr):
+        if pnr in self.pnrs:
+            return True
+        else:
+            self.pnrs.add(pnr)
+            return False
 
     @mutex
     def __next__(self):
@@ -225,15 +269,28 @@ class Reader(object):
 def worker(reader, single_file=False):
     for index, line in reader:
 
+        transaction_type = re_type.findall(line)
+        intersection = to_skip.intersection(set(transaction_type))
+        if len(intersection):
+            logger.info("{:>6d}: {} marked for skip".format(index, transaction_type))
+            continue
+
         matches = re_body.findall(line)
         if len(matches) != 1:
             logger.error("{:>6d}: invalid number of <soap-env:body> sections. expected 1 found {:d}".format(index, len(matches)))
             reader.score(0, "BODY COUNT")
             continue
 
-        pnr = re_pnr.findall(line)
-        if len(pnr):
-            pnr = pnr.pop()
+        # Don't do PNRs we've seen before
+        try:
+            pnr = re_pnr.findall(line)[0]
+        except IndexError:
+            logger.error("{:>6d}: cannot get pnr from line".format(index))
+            continue
+        else:
+            if reader.memory(pnr):
+                logger.info("{:>6d}: {} seen pnr, skipping".format(index, pnr))
+                continue
 
         data = "".join(envelope.format(**{
             "security": security.apply(),
@@ -270,26 +327,33 @@ def worker(reader, single_file=False):
             return
 
 
-reader  = Reader(args.file)
-if args.batch:
-    threads = []
-    logger.info("starting {:d} worker{:s}".format(args.threads, "" if args.threads == 1 else "s"))
-    for _ in range(args.threads):
-        w = threading.Thread(target=worker, args=(reader,))
-        w.start()
-        time.sleep(STAGER)
-        threads.append(w)
+def run_workers():
+    reader  = Reader(args.file)
+    if args.batch:
+        threads = []
+        logger.info("starting {:d} worker{:s}".format(args.threads, "" if args.threads == 1 else "s"))
+        for _ in range(args.threads):
+            w = threading.Thread(target=worker, args=(reader,))
+            w.start()
+            time.sleep(STAGER)
+            threads.append(w)
 
-    try:
-        for w in threads:
-            w.join()
-    except KeyboardInterrupt:
+        try:
+            for w in threads:
+                w.join()
+        except KeyboardInterrupt:
+            reader.close()
+    else:
+        worker(reader, single_file=True)
         reader.close()
-else:
-    worker(reader, single_file=True)
-    reader.close()
 
-while threading.active_count() > 1:
-    time.sleep(.1)
+    while threading.active_count() > 1:
+        time.sleep(.1)
 
-reader.print_stats()
+    reader.print_stats()
+
+import pudb.b
+for x in Cloud("xml_pnr_ftp_feed"):
+    print(x)
+
+print("done")
