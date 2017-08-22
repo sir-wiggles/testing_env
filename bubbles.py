@@ -11,7 +11,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from xml.etree import ElementTree
 
 import requests
@@ -46,7 +46,7 @@ parser.add_argument("--env",      type=str,  default="local",       help="key in
 parser.add_argument("--username", type=str,  default="",            help="used to overwrite env value")
 parser.add_argument("--password", type=str,  default="",            help="used to overwrite env value")
 parser.add_argument("--batch",    action="store_true",              help="to execute multiple lines from the file")
-parser.add_argument("--file",     type=str,  required=True,         help="relative location of the file where payloads are located")
+parser.add_argument("--file",     type=str,                         help="relative location of the file where payloads are located")
 parser.add_argument("--threads",  type=int,  default=1,             help="number of threads to use")
 parser.add_argument("--skip",     type=str,  nargs="+", default=[], help="transaction types to skip")
 args = parser.parse_args()
@@ -185,41 +185,68 @@ def mutex(func):
 
 class Cloud(object):
 
-    def __init__(self, prefix, project="flyr-datascience", bucket="flyr_cwt1"):
+    def __init__(self, prefix, project="flyr-datascience", bucket="flyr_cwt1", env="local"):
         self.bucket = bucket
         self.prefix = prefix
         self.bucket = storage.Client(project).get_bucket(bucket)
+        self.blobs  = deque(self.bucket.list_blobs(prefix=self.prefix))
         self.passwd = 'flYr_*%1'
+        self.env    = env
 
     def __iter__(self):
         return self
 
     def __next__(self):
-        blobs = self.bucket.list_blobs(prefix=self.prefix)
-        for i, blob in enumerate(blobs):
-            if len(blob.name) < 30:
-                continue
+        while True:
+            blob = None
+            i = 0
+            while len(self.blobs) > 0:
+                blob = self.blobs.popleft()
+                i += 1
+                if len(blob.name) < 30:
+                    logger.warning("Skipping {:s}".format(blob.name))
+                    continue
+                break
 
-            if i <= 20:
-                continue
+            if blob is None:
+                raise StopIteration
+
+            self.current_blob = blob
 
             _, name = os.path.split(blob.name)
             path = os.path.join("/tmp", name)
 
+            logger.info("Downloading {}".format(blob.name))
             blob.download_to_filename(os.path.join("/tmp", name))
             resp = subprocess.call(["7z", "x", path, "-o/tmp", "-p{}".format(self.passwd), "-y"])
-            print(resp)
-            raise StopIteration
+            if resp != 0:
+                logger.warning("Unzipped {:s} with error code {:d}".format(path, resp))
+                os.unlink(path)
+                self.problem_unzipping(resp)
+                continue
+            return open(".".join([os.path.splitext(path)[0], "txt"]), "r")
+
+    def problem_unzipping(self, code):
+        if self.env == "prod":
+            self.bucket.rename_blob(self.current_blob, "errors/{:d}/{}".format(self.blob.name))
+            logger.info("Problem ({:d}) {:s}".format(code, self.current_blob.name))
+
+    def mark_completed(self):
+        if self.env == "prod":
+            self.bucket.rename_blob(self.current_blob, "completed/{}".format(self.blob.name))
+        logger.info("Completed {:s}".format(self.current_blob.name))
 
 
 class Reader(object):
 
-    def __init__(self, filename):
-        self.file  = open(filename, "r")
-        self.lock  = threading.Lock()
-        self.row   = 0
-        self.stats = defaultdict(lambda: defaultdict(float))
-        self.pnrs  = set()
+    def __init__(self, cloud):
+        self.cloud  = cloud
+        self.lock   = threading.Lock()
+        self.stats  = defaultdict(lambda: defaultdict(float))
+        self.pnrs   = set()
+        self.row    = 0
+        self.f      = self.cloud.__next__()
+        self.closed = False
 
     def __iter__(self):
         return self
@@ -232,21 +259,29 @@ class Reader(object):
             self.pnrs.add(pnr)
             return False
 
+    def _get_new_file(self):
+        self.f = self.cloud.__next__()
+        self.row = 0
+        if self.f is None:
+            return False
+        return True
+
     @mutex
     def __next__(self):
-        if self.file.closed:
-            raise StopIteration
-
-        line = self.file.readline()
-        if line == "":
-            raise StopIteration
-
-        self.row += 1
-        return self.row, line
+        while not self.closed:
+            line = self.f.readline()
+            if line == "":
+                self.cloud.mark_completed()
+                if self._get_new_file():
+                    continue
+                raise StopIteration
+            self.row += 1
+            return self.row, line
+        return -1, ""
 
     @mutex
     def close(self):
-        self.file.close()
+        self.closed = True
 
     @mutex
     def score(self, dt, status):
@@ -268,6 +303,10 @@ class Reader(object):
 
 def worker(reader, single_file=False):
     for index, line in reader:
+
+        if index == -1 and line == "":
+            logger.info("Shutting down")
+            break
 
         transaction_type = re_type.findall(line)
         intersection = to_skip.intersection(set(transaction_type))
@@ -328,7 +367,8 @@ def worker(reader, single_file=False):
 
 
 def run_workers():
-    reader  = Reader(args.file)
+    cloud  = Cloud("xml_pnr_ftp_feed")
+    reader = Reader(cloud)
     if args.batch:
         threads = []
         logger.info("starting {:d} worker{:s}".format(args.threads, "" if args.threads == 1 else "s"))
@@ -344,7 +384,8 @@ def run_workers():
         except KeyboardInterrupt:
             reader.close()
     else:
-        worker(reader, single_file=True)
+        cloud  = Cloud("xml_pnr_ftp_feed")
+        reader = Reader(cloud)
         reader.close()
 
     while threading.active_count() > 1:
@@ -352,8 +393,5 @@ def run_workers():
 
     reader.print_stats()
 
-import pudb.b
-for x in Cloud("xml_pnr_ftp_feed"):
-    print(x)
 
-print("done")
+run_workers()
