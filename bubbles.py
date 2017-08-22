@@ -15,7 +15,6 @@ from collections import defaultdict
 from xml.etree import ElementTree
 
 import requests
-from gcloud import storage
 from zeep.wsse import utils
 
 
@@ -183,35 +182,6 @@ def mutex(func):
     return wrapper
 
 
-class Cloud(object):
-
-    def __init__(self, prefix, project="flyr-datascience", bucket="flyr_cwt1"):
-        self.bucket = bucket
-        self.prefix = prefix
-        self.bucket = storage.Client(project).get_bucket(bucket)
-        self.passwd = 'flYr_*%1'
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        blobs = self.bucket.list_blobs(prefix=self.prefix)
-        for i, blob in enumerate(blobs):
-            if len(blob.name) < 30:
-                continue
-
-            if i <= 20:
-                continue
-
-            _, name = os.path.split(blob.name)
-            path = os.path.join("/tmp", name)
-
-            blob.download_to_filename(os.path.join("/tmp", name))
-            resp = subprocess.call(["7z", "x", path, "-o/tmp", "-p{}".format(self.passwd), "-y"])
-            print(resp)
-            raise StopIteration
-
-
 class Reader(object):
 
     def __init__(self, filename):
@@ -352,8 +322,5 @@ def run_workers():
 
     reader.print_stats()
 
-import pudb.b
-for x in Cloud("xml_pnr_ftp_feed"):
-    print(x)
-
+run_workers()
 print("done")
