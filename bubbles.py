@@ -7,7 +7,6 @@ import hashlib
 import logging
 import os
 import re
-import subprocess
 import sys
 import threading
 import time
@@ -281,7 +280,8 @@ def worker(reader, single_file=False):
 
         dt = toc - tic
         if level == logging.INFO:
-            logger.log(level, "{:>6d}: {} {} in {:>5.2f}s".format(index, pnr, status, dt))
+            message = re_errors.findall(content)
+            logger.log(level, "{:>6d}: {} {} in {:>5.2f}s with message: {}".format(index, pnr, status, dt, message))
 
         elif level == logging.WARN:
             message = re_errors.findall(content)
@@ -321,6 +321,7 @@ def run_workers():
         time.sleep(.1)
 
     reader.print_stats()
+
 
 run_workers()
 print("done")
