@@ -1,0 +1,16 @@
+version: '2'
+services:
+  buywait:
+    volumes: 
+      - ../buywait/:/app/
+    build:
+      context: ../buywait/
+    command: /bin/bash
+    stdin_open: true
+    tty: true
+    environment:
+      SQL_ADDRESS: test-db
+      SQL_DB_NAME: compose
+      SQL_PASSWORD: pass
+      SQL_PORT: 5432
+      SQL_USERNAME: user 

@@ -1,0 +1,73 @@
+version: '2'
+services:
+  buywait:
+    build: 
+      context: ../buywait/
+    entrypoint: ''
+    volumes:
+      - ../buywait/:/app/
+      - ~/.config/gcloud:/root/.config/gcloud
+    environment:
+      GUNICORN_CMD_ARGS: --bind=0.0.0.0:80 --workers=4 --preload --error-logfile=- --access-logfile=- --log-level=info --forwarded-allow-ips=* --chdir=/app/
+      SQL_ADDRESS: test-db
+      SQL_DB_NAME: compose
+      SQL_PASSWORD: pass
+      SQL_PORT: 5432
+      SQL_USERNAME: user 
+      MERLIN_MODEL_URL: http://merlinmodel
+    ports:
+      - "5050:80"
+
+  cwtxmlparser:
+    build: 
+      context: ../cwtxmlparser/
+    entrypoint: ''
+    volumes:
+      - ../cwtxmlparser/:/app/
+      - ~/.config/gcloud:/root/.config/gcloud
+    environment:
+      GUNICORN_CMD_ARGS: --bind=0.0.0.0:80 --workers=4 --preload --error-logfile=- --access-logfile=- --log-level=info --forwarded-allow-ips=* --chdir=/app/
+      BUYWAIT_URL: http://buywait
+      SQL_ADDRESS: test-db
+      SQL_DB_NAME: compose
+      SQL_PASSWORD: pass
+      SQL_PORT: 5432
+      SQL_USERNAME: user 
+      USERNAME: myusername
+      PASSWORD: mypassword
+    ports:
+      - "5051:80"
+
+  travelreservationsync:
+    build:
+      context: ../travelreservationsync/
+    entrypoint: ""
+    volumes:
+      - ~/.config/gcloud:/root/.config/gcloud
+    ports:
+      - "5052:8888"
+    environment:
+      USER_LOGINS: test1,testpassword1;test2,testpassword2
+      SERVER_SERVICE: trs/
+      WEBSERVICE_HOST: cwtxmlparser
+      WEBSERVICE_PORT: 80
+
+  #merlinmodel:
+    #build: 
+      #context: ../merlin_model/
+    #entrypoint: ''
+    #volumes:
+      #- ../merlin_model/:/app/
+      #- ~/.config/gcloud:/root/.config/gcloud
+    #environment:
+      #GUNICORN_CMD_ARGS: --bind=0.0.0.0:80 --workers=4 --preload --error-logfile=- --access-logfile=- --log-level=info --forwarded-allow-ips=* --chdir=/app/
+
+  test-db:
+    image: postgres
+    environment:
+      POSTGRES_PASSWORD: pass
+      POSTGRES_USER: user
+      POSTGRES_DB: compose
+    volumes:
+      - ./test-db-data:/var/lib/postgresql/data
+

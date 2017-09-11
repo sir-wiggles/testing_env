@@ -1,0 +1,12 @@
+version: '2'
+services:
+  merlinmodel:
+    volumes:
+      - ../merlin_model/:/app/
+      - ~/.config/gcloud:/root/.config/gcloud
+    build:
+      context: ../merlin_model/
+    command: /bin/bash
+    stdin_open: true
+    tty: true
+

@@ -1,0 +1,16 @@
+version: '2'
+services:
+  cwtxmlparser:
+    volumes: 
+      - ../cwtxmlparser/:/app/
+    build:
+      context: ../cwtxmlparser/
+    command: /bin/bash
+    stdin_open: true
+    tty: true
+    environment:
+      SQL_ADDRESS: test-db
+      SQL_DB_NAME: compose
+      SQL_PASSWORD: pass
+      SQL_PORT: 5432
+      SQL_USERNAME: user 
